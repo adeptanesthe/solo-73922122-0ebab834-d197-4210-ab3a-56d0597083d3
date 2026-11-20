@@ -36,7 +36,7 @@
   }
   button:disabled { opacity: .5; cursor: not-allowed; }
   .row { display: flex; align-items: center; gap: 14px; margin-top: 16px; flex-wrap: wrap; }
-  #error {
+  #error, #trackError {
     display: none; background: #3a1d22; border: 1px solid var(--bad);
     color: #ffb4ab; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
   }
@@ -62,6 +62,9 @@
     width: 100%; height: 96px; display: block; background: var(--bg);
     border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
   }
+  #whistleCanvas {
+    height: 220px; cursor: crosshair; margin-top: 8px;
+  }
   audio { width: 100%; margin-top: 8px; }
   .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 8px; }
   .legend span::before {
@@ -72,13 +75,45 @@
   .lg-miss::before { background: var(--bad); }
   .lg-extra::before { background: var(--warn); }
   .lg-cursor::before { background: var(--info); }
+  .lg-track::before { background: #56d4dd; }
+  .lg-ambig::before { background: var(--warn); }
+  .lg-gap::before { background: #8b98a9; }
   table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 600; }
   td.time-link { color: var(--info); cursor: pointer; text-decoration: underline dotted; }
+  tr.seg-row { cursor: pointer; }
+  tr.seg-row:hover { background: rgba(74,168,255,.08); }
   .empty { color: var(--muted); }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   @media (max-width: 820px) { .upload-grid, .two-col { grid-template-columns: 1fr; } }
+  .tabs { display: flex; gap: 8px; padding: 0 20px; margin-top: 18px; }
+  .tab {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-bottom: 0; border-radius: 8px 8px 0 0; padding: 9px 18px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  .tab.active { color: var(--text); background: var(--panel); border-color: var(--info); }
+  .form-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .form-grid label { display: block; font-weight: 600; margin-bottom: 6px; }
+  .form-grid .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .form-grid input[type=number] {
+    width: 100%; padding: 10px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; font-size: 14px;
+  }
+  @media (max-width: 820px) { .form-grid { grid-template-columns: 1fr; } }
+  .seg-chip {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; white-space: nowrap;
+  }
+  .seg-chip.track { background: rgba(86,212,221,.15); color: #56d4dd; border: 1px solid #56d4dd; }
+  .seg-chip.ambiguous { background: rgba(243,156,18,.15); color: var(--warn); border: 1px solid var(--warn); }
+  .seg-chip.gap { background: rgba(139,152,169,.15); color: var(--muted); border: 1px solid var(--muted); }
+  .readout { color: var(--muted); font-size: 12px; margin-top: 6px; min-height: 18px; }
+  .stop-banner {
+    margin-top: 14px; padding: 12px 14px; border-radius: 8px;
+    background: rgba(74,168,255,.1); border: 1px solid var(--info); color: #b9d9ff;
+  }
 </style>
 </head>
 <body>
@@ -86,7 +121,12 @@
   <h1>冲压机冲次声音核对</h1>
   <p>上传正常循环与待检循环录音（16 kHz / 16-bit PCM / 单声道 WAV，≤ 8 秒），系统按参考节奏自动核对漏冲与多冲。点击波形或表格时刻可定位播放。</p>
 </header>
+<nav class="tabs">
+  <button class="tab active" id="tabInspect">冲次核对</button>
+  <button class="tab" id="tabWhistle">啸声追踪</button>
+</nav>
 <main>
+  <div id="inspectView">
   <section class="panel">
     <div class="upload-grid">
       <div class="upload-box">
@@ -164,11 +204,97 @@
     </div>
     <p class="empty" style="margin-top:14px">说明：每次漏冲只标注对应参考冲次，后续冲次按参考序号继续对齐，不会整体错位；40ms 内回声已在检测阶段剔除，不计多冲。</p>
   </section>
+  </div>
+
+  <div id="whistleView" style="display:none">
+    <section class="panel">
+      <h3>送料啸声追踪 — 从指定起点沿窄带谱峰追踪频率轨迹</h3>
+      <p class="empty" style="margin-top:0">
+        上传一段现有格式的录音（16 kHz / 16-bit PCM / 单声道 WAV，≤ 8 秒）。填写啸声清楚处的时刻与近似频率后，
+        系统从该时刻起在 200～2000 Hz 内追踪窄带谱峰；谱峰中断 ≤ 120 ms 且接法唯一时续接（缺口标「缺测」），
+        更长中断即停止。交叉处保留与起点方向一致、符合变频上限的走向，多条走向均可成立的区段标「待复听」。
+      </p>
+      <div class="upload-box" style="margin-top:14px">
+        <label for="whistleFile">含送料啸声的录音</label>
+        <input id="whistleFile" type="file" accept=".wav,audio/wav" />
+        <div class="hint" id="whistleHint"></div>
+      </div>
+      <div class="form-grid" style="margin-top:14px">
+        <div>
+          <label for="startTime">起点时刻 (s)</label>
+          <input id="startTime" type="number" min="0" step="0.001" placeholder="如 1.250" />
+          <div class="hint">啸声清楚处的录音时间</div>
+        </div>
+        <div>
+          <label for="startFreq">近似频率 (Hz)</label>
+          <input id="startFreq" type="number" min="200" max="2000" step="1" placeholder="如 1200" />
+          <div class="hint">200～2000 Hz 内该时刻的啸声频率</div>
+        </div>
+        <div>
+          <label for="maxRate">每秒最大频率变化量 (Hz/s)</label>
+          <input id="maxRate" type="number" min="0.001" step="1" placeholder="如 800" />
+          <div class="hint">超过此变化量的跳变按中断处理</div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="trackBtn" disabled>开始追踪</button>
+        <span id="trackBusy" class="empty" style="display:none">追踪中…</span>
+      </div>
+    </section>
+
+    <div id="trackError"></div>
+
+    <section id="trackResultPanel" class="panel" style="display:none">
+      <div class="verdict">
+        <h2 style="margin:0;font-size:17px">追踪结果</h2>
+        <div class="stats" id="trackStats"></div>
+      </div>
+      <div id="stopBanner" class="stop-banner"></div>
+      <ul class="warnings" id="trackWarnings"></ul>
+    </section>
+
+    <section id="trackChartPanel" class="panel" style="display:none">
+      <h3>频率轨迹（横轴=原录音时间，纵轴=频率）</h3>
+      <canvas id="whistleCanvas"></canvas>
+      <div class="readout" id="chartReadout"></div>
+      <div class="legend">
+        <span class="lg-track">轨迹（确定）</span>
+        <span class="lg-ambig">待复听（多走向均可成立）</span>
+        <span class="lg-gap">缺测（中断内无谱峰）</span>
+        <span class="lg-cursor">播放位置</span>
+      </div>
+      <audio id="whistleAudio" controls preload="metadata" style="margin-top:12px"></audio>
+    </section>
+
+    <section id="trackSegPanel" class="panel" style="display:none">
+      <h3>区段明细 — 点击任意一行定位播放</h3>
+      <table id="segTable">
+        <thead><tr><th>#</th><th>类型</th><th>开始 (s)</th><th>结束 (s)</th><th>历时 (s)</th><th>起频 (Hz)</th><th>止频 (Hz)</th><th>说明</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" style="margin-top:14px">
+        说明：轨迹点来自逐帧窄带谱峰检测，频率分辨率为补零后的 ~7.8 Hz；「待复听」区段内交叉的两条谱线可能互换，
+        请点该区段复听确认；「缺测」区段仅表示中断内没有可测谱峰，并不代表啸声停止。
+      </p>
+    </section>
+  </div>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { result: null, refPeaks: null, testPeaks: null };
+const state = { result: null, refPeaks: null, testPeaks: null, track: null };
+
+// ---- 页签切换 ----
+function showTab(which) {
+  const isWhistle = which === "whistle";
+  $("inspectView").style.display = isWhistle ? "none" : "block";
+  $("whistleView").style.display = isWhistle ? "block" : "none";
+  $("tabInspect").classList.toggle("active", !isWhistle);
+  $("tabWhistle").classList.toggle("active", isWhistle);
+  if (isWhistle && state.track) drawWhistle(true);
+}
+$("tabInspect").addEventListener("click", () => showTab("inspect"));
+$("tabWhistle").addEventListener("click", () => showTab("whistle"));
 
 const VERDICT_TEXT = {
   ok: "✓ 循环正常，未发现漏冲/多冲",
@@ -217,9 +343,7 @@ function showError(msg) {
   el.textContent = "✗ " + msg + "（上一次有效结果仍保留在下方，未被覆盖）";
   el.style.display = "block";
   if (state.result) render(state.result);
-}
-
-function render(r) {
+}function render(r) {
   $("resultPanel").style.display = "block";
   $("tracksPanel").style.display = "block";
   $("detailPanel").style.display = "block";
@@ -386,7 +510,317 @@ async function loadPeaks(url, duration, canvasId, audioId, impacts, extraMarkers
   audio.addEventListener("pause", () => redraw(audio.currentTime || 0));
 }
 
-// 进入页面时尝试恢复上一次有效结果
+// ---- 啸声追踪 -------------------------------------------------------------
+const TRACK_HELP = {
+  track: "谱峰连续、走向唯一",
+  ambiguous: "交叉处多条走向均可成立，请复听",
+  gap: "中断 ≤120ms 且接法唯一，缺口内缺测",
+};
+const CHART_PAD_L = 52, CHART_PAD_R = 14;
+let whistleCursor = 0;
+
+// 画布横坐标 -> 原录音时间（与 drawWhistle 的绘图区一致）
+function chartTimeAt(canvas, clientX, duration) {
+  const rect = canvas.getBoundingClientRect();
+  const plotW = Math.max(1, rect.width - CHART_PAD_L - CHART_PAD_R);
+  const x = clientX - rect.left - CHART_PAD_L;
+  return Math.max(0, Math.min(duration, (x / plotW) * duration));
+}
+
+$("whistleFile").addEventListener("change", () => {
+  $("whistleHint").textContent = $("whistleFile").files[0]?.name ?? "";
+  refreshTrackBtn();
+});
+["startTime", "startFreq", "maxRate"].forEach((id) =>
+  $(id).addEventListener("input", refreshTrackBtn)
+);
+function refreshTrackBtn() {
+  $("trackBtn").disabled = !(
+    $("whistleFile").files[0] &&
+    $("startTime").value !== "" &&
+    $("startFreq").value !== "" &&
+    $("maxRate").value !== ""
+  );
+}
+
+$("trackBtn").addEventListener("click", async () => {
+  const fd = new FormData();
+  fd.append("audio", $("whistleFile").files[0]);
+  fd.append("start_time", $("startTime").value.trim());
+  fd.append("start_freq", $("startFreq").value.trim());
+  fd.append("max_rate_hz_s", $("maxRate").value.trim());
+  $("trackError").style.display = "none";
+  $("trackBusy").style.display = "inline";
+  $("trackBtn").disabled = true;
+  try {
+    const resp = await fetch("/api/track/whistle", { method: "POST", body: fd });
+    const payload = await resp.json();
+    if (!resp.ok) {
+      showTrackError(typeof payload.detail === "string"
+        ? payload.detail
+        : "追踪参数不完整或格式不正确");
+      return;
+    }
+    state.track = payload;
+    renderTrack(payload);
+  } catch (e) {
+    showTrackError("请求失败：" + e.message);
+  } finally {
+    $("trackBusy").style.display = "none";
+    refreshTrackBtn();
+  }
+});
+
+function showTrackError(msg) {
+  const el = $("trackError");
+  el.textContent = state.track
+    ? "✗ " + msg + "（上一次轨迹仍保留在下方，未被覆盖）"
+    : "✗ " + msg;
+  el.style.display = "block";
+  if (state.track) renderTrack(state.track);
+}
+
+function fmtFreq(v) {
+  return v == null ? "—" : v.toFixed(0);
+}
+
+function renderTrack(r) {
+  $("trackResultPanel").style.display = "block";
+  $("trackChartPanel").style.display = "block";
+  $("trackSegPanel").style.display = "block";
+
+  const p = r.params;
+  $("trackStats").innerHTML = [
+    ["起点", `${p.start_time.toFixed(3)}s / ${fmtFreq(p.start_freq)}Hz`],
+    ["变频上限", `${p.max_rate_hz_s} Hz/s`],
+    ["区段", r.summary.segment_count],
+    ["待复听", `${r.summary.ambiguous_seconds.toFixed(2)}s`],
+    ["缺测", `${r.summary.missing_seconds.toFixed(2)}s`],
+  ].map(([k, v]) => `<span>${k}：<b>${v}</b></span>`).join("");
+
+  $("stopBanner").textContent =
+    `追踪在 ${r.track.stop_time.toFixed(3)}s` +
+    (r.track.stop_freq != null ? ` / ${fmtFreq(r.track.stop_freq)}Hz` : "") +
+    ` 停止：${r.track.stop_text}`;
+
+  $("trackWarnings").innerHTML = (r.warnings || [])
+    .map((w) => `<li>${w}</li>`).join("");
+
+  const audio = $("whistleAudio");
+  audio.src = r.audio.url + "?t=" + r.id;
+
+  const body = $("segTable").querySelector("tbody");
+  body.innerHTML = r.segments.map((s, i) => {
+    const dur = Math.max(0, s.end_time - s.start_time);
+    return `<tr class="seg-row" data-seg="${i}">
+      <td>${i + 1}</td>
+      <td><span class="seg-chip ${s.kind}">${s.label}</span></td>
+      <td>${s.start_time.toFixed(3)}</td>
+      <td>${s.end_time.toFixed(3)}</td>
+      <td>${dur.toFixed(3)}</td>
+      <td>${fmtFreq(s.start_freq)}</td>
+      <td>${fmtFreq(s.end_freq)}</td>
+      <td>${TRACK_HELP[s.kind] || ""}</td>
+    </tr>`;
+  }).join("");
+
+  body.querySelectorAll("tr.seg-row").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const seg = r.segments[Number(tr.dataset.seg)];
+      // 从区段起点稍前一点开始播放，便于听清进入该区段的变化
+      seekAndPlay(audio, Math.max(0, seg.start_time - 0.05));
+    });
+  });
+
+  bindWhistleCanvas(r);
+  drawWhistle(true);
+}
+
+function bindWhistleCanvas(r) {
+  const canvas = $("whistleCanvas");
+
+  // 光标所在区段（用于点击定位与读数）
+  const segAt = (t) =>
+    state.track.segments.find((s) => t >= s.start_time - 0.01 && t <= s.end_time + 0.01);
+
+  canvas.onclick = (e) => {
+    if (!state.track) return;
+    const t = chartTimeAt(canvas, e.clientX, r.audio.duration);
+    const seg = segAt(t);
+    // 落在某区段上：从该区段起点播放，方便复听整段；否则定位到点击时刻
+    seekAndPlay($("whistleAudio"), seg ? seg.start_time : t);
+  };
+  canvas.onmousemove = (e) => {
+    if (!state.track) return;
+    const t = chartTimeAt(canvas, e.clientX, state.track.audio.duration);
+    const seg = segAt(t);
+    const f = freqAtTime(state.track, t);
+    $("chartReadout").textContent =
+      `光标 ${t.toFixed(3)}s` +
+      (f != null ? ` / ${f} Hz` : "") +
+      (seg ? ` · ${seg.label}` : "") +
+      "（点击区段从区段起点播放）";
+  };
+  canvas.onmouseleave = () => {
+    $("chartReadout").textContent = "点击图中区段可定位播放；图中横轴为原录音时间。";
+  };
+  const audio = $("whistleAudio");
+  let raf = null;
+  const loop = () => {
+    raf = null;
+    whistleCursor = audio.currentTime || 0;
+    drawWhistle(false);
+    if (!audio.paused) raf = requestAnimationFrame(loop);
+  };
+  audio.addEventListener("play", () => {
+    if (raf == null) raf = requestAnimationFrame(loop);
+  });
+  audio.addEventListener("seeked", () => {
+    whistleCursor = audio.currentTime || 0;
+    drawWhistle(false);
+  });
+  audio.addEventListener("pause", () => {
+    whistleCursor = audio.currentTime || 0;
+    drawWhistle(false);
+  });
+}
+
+// 轨迹在 t 时刻的插值频率（用于光标读数）
+function freqAtTime(r, t) {
+  let best = null;
+  for (const s of r.segments) {
+    if (!s.points.length) continue;
+    if (t >= s.start_time && t <= s.end_time) {
+      let prev = s.points[0];
+      for (const pt of s.points) {
+        if (pt[0] >= t) {
+          if (pt[0] === prev[0]) return Math.round(pt[1]);
+          const k = (t - prev[0]) / (pt[0] - prev[0]);
+          return Math.round(prev[1] + k * (pt[1] - prev[1]));
+        }
+        prev = pt;
+      }
+      return Math.round(prev[1]);
+    }
+    for (const pt of s.points) {
+      if (!best || Math.abs(pt[0] - t) < Math.abs(best[0] - t)) best = pt;
+    }
+  }
+  return best ? Math.round(best[1]) : null;
+}
+
+function drawWhistle(resize) {
+  const r = state.track;
+  const canvas = $("whistleCanvas");
+  if (!r || !canvas.clientWidth) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth;
+  const H = 220;
+  if (resize || canvas.width !== Math.round(W * dpr)) {
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const padL = CHART_PAD_L, padR = CHART_PAD_R, padT = 14, padB = 30;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const d = r.audio.duration || 1;
+  const fmin = r.params.fmin_hz, fmax = r.params.fmax_hz;
+  const xOf = (t) => padL + (Math.max(0, Math.min(d, t)) / d) * plotW;
+  const yOf = (f) => padT + (1 - (f - fmin) / (fmax - fmin)) * plotH;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#0f1419";
+  ctx.fillRect(0, 0, W, H);
+
+  // 坐标网格与刻度
+  ctx.strokeStyle = "#2b3648";
+  ctx.fillStyle = "#8b98a9";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.lineWidth = 1;
+  for (const f of [200, 500, 1000, 1500, 2000]) {
+    const y = yOf(f);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(`${f}`, padL - 6, y);
+  }
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("Hz", 6, padT - 4);
+  const secStep = d > 6 ? 1 : d > 3 ? 0.5 : 0.25;
+  for (let t = 0; t <= d + 1e-9; t += secStep) {
+    const x = xOf(t);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText(`${t.toFixed(2)}s`, x, padT + plotH + 6);
+  }
+
+  // 停止点竖线
+  const stopX = xOf(r.track.stop_time);
+  ctx.strokeStyle = "#e74c3c";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(stopX, padT); ctx.lineTo(stopX, padT + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#e74c3c";
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  ctx.fillText("停止", stopX + 3, padT + 11);
+
+  // 区段：缺测画成虚线桥，待复听用琥珀色加粗，确定段青色
+  for (const s of r.segments) {
+    if (s.kind === "gap") {
+      const x1 = xOf(s.start_time), x2 = xOf(s.end_time);
+      const y1 = yOf(s.start_freq), y2 = yOf(s.end_freq);
+      ctx.save();
+      ctx.strokeStyle = "#8b98a9";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = "#8b98a9";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillText("缺测", (x1 + x2) / 2, Math.min(y1, y2) + 4);
+      continue;
+    }
+    const color = s.kind === "ambiguous" ? "#f39c12" : "#56d4dd";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = s.kind === "ambiguous" ? 3.5 : 2;
+    ctx.beginPath();
+    s.points.forEach(([t, f], i) => {
+      const x = xOf(t), y = yOf(f);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  // 起点标记
+  const sx = xOf(r.params.start_time), sy = yOf(r.params.start_freq);
+  ctx.fillStyle = "#4aa8ff";
+  ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#4aa8ff";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(sx - 7, sy); ctx.lineTo(sx + 7, sy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(sx, sy - 7); ctx.lineTo(sx, sy + 7); ctx.stroke();
+  ctx.fillStyle = "#9cc9ff";
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  ctx.fillText("起点", sx + 8, sy - 4);
+
+  // 播放光标
+  const cx = xOf(whistleCursor);
+  ctx.strokeStyle = "#4aa8ff";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, padT); ctx.lineTo(cx, padT + plotH); ctx.stroke();
+  if (resize) $("chartReadout").textContent =
+    "点击图中区段可定位播放；图中横轴为原录音时间。";
+}
+
+window.addEventListener("resize", () => {
+  if (state.track && $("whistleView").style.display !== "none") drawWhistle(true);
+});
+
+// 进入页面时尝试恢复上一次有效结果（核对与追踪各自独立恢复）
 (async () => {
   try {
     const resp = await fetch("/api/result/last");
@@ -396,6 +830,13 @@ async function loadPeaks(url, duration, canvasId, audioId, impacts, extraMarkers
       render(r);
     }
   } catch (_) { /* 首次访问无结果，忽略 */ }
+  try {
+    const resp = await fetch("/api/track/last");
+    if (resp.ok) {
+      state.track = await resp.json();
+      renderTrack(state.track);
+    }
+  } catch (_) { /* 首次访问无追踪结果，忽略 */ }
 })();
 </script>
 </body>

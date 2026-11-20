@@ -17,6 +17,7 @@ from .audio import (
     validate_reference,
 )
 from .matching import align_impacts
+from .tracking import STOP_TEXT, track_whistle as compute_whistle_track
 
 MAX_UPLOAD_BYTES = 16_000 * 2 * 8 + 4096  # 8 秒 16k/16bit/单声道 + WAV 头余量
 
@@ -28,6 +29,7 @@ class Store:
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._last_result: dict[str, Any] | None = None
+        self._last_track: dict[str, Any] | None = None
 
     def _save_wav(self, raw: bytes, prefix: str) -> str:
         digest = hashlib.sha256(raw).hexdigest()[:16]
@@ -156,3 +158,89 @@ class Store:
     def clear(self) -> None:
         with self._lock:
             self._last_result = None
+
+    # ---- 送料啸声追踪 -----------------------------------------------------
+    def track_whistle(
+        self,
+        raw: bytes,
+        start_time: float,
+        start_freq: float,
+        max_rate_hz_s: float,
+    ) -> dict[str, Any]:
+        """从指定起点追踪啸声谱峰。
+
+        与冲次核对一致：参数/音频/起点任何一步不合法都抛
+        ``TrackValidationError``，且不写入状态，上一次轨迹原样保留。
+        """
+        samples = parse_wav(raw)  # 格式不合格 -> AudioValidationError
+        tracking = compute_whistle_track(
+            samples, start_time, start_freq, max_rate_hz_s
+        )
+
+        url = self._save_wav(raw, "whistle")
+        duration = round(tracking.duration, 4)
+        segments = [
+            {
+                "kind": seg.kind,
+                "label": seg.label,
+                "start_time": round(seg.start_time, 4),
+                "end_time": round(seg.end_time, 4),
+                "start_freq": None if seg.start_freq is None else round(seg.start_freq, 1),
+                "end_freq": None if seg.end_freq is None else round(seg.end_freq, 1),
+                "points": [
+                    [round(t, 4), round(f, 1)] for t, f in seg.points
+                ],
+            }
+            for seg in tracking.segments
+        ]
+
+        warnings: list[str] = []
+        if tracking.stop_reason == "gap_ambiguous":
+            warnings.append(
+                "中断处有多个符合变频上限的谱峰，接法不唯一，按规则停止追踪，"
+                "请人工复听中断位置附近"
+            )
+        if tracking.stop_reason == "gap_too_long":
+            warnings.append("谱峰中断超过 120 ms，按规则停止追踪")
+        if any(s["kind"] == "ambiguous" for s in segments):
+            warnings.append("交叉附近存在多条可成立的走向，标出的区段请人工复听")
+
+        result = {
+            "id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "params": {
+                "start_time": round(tracking.start_time, 4),
+                "start_freq": round(tracking.start_freq, 1),
+                "max_rate_hz_s": round(max_rate_hz_s, 3),
+                "requested_start_time": round(start_time, 4),
+                "requested_start_freq": round(start_freq, 1),
+                "fmin_hz": 200.0,
+                "fmax_hz": 2000.0,
+                "max_gap_ms": 120,
+            },
+            "audio": {"url": url, "duration": duration},
+            "track": {
+                "stop_time": round(tracking.stop_time, 4),
+                "stop_freq": None if tracking.stop_freq is None else round(tracking.stop_freq, 1),
+                "stop_reason": tracking.stop_reason,
+                "stop_text": STOP_TEXT.get(tracking.stop_reason, tracking.stop_reason),
+            },
+            "segments": segments,
+            "summary": {
+                "segment_count": len(segments),
+                "ambiguous_seconds": round(tracking.ambiguous_seconds, 3),
+                "missing_seconds": round(tracking.missing_seconds, 3),
+            },
+            "warnings": warnings,
+        }
+        with self._lock:
+            self._last_track = result
+        return result
+
+    def get_last_track(self) -> dict[str, Any] | None:
+        with self._lock:
+            return None if self._last_track is None else dict(self._last_track)
+
+    def clear_track(self) -> None:
+        with self._lock:
+            self._last_track = None

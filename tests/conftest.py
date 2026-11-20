@@ -89,3 +89,69 @@ def post_inspect(client: TestClient, ref: bytes, test: bytes):
             "test": ("test.wav", test, "audio/wav"),
         },
     )
+
+
+def whistle_signal(
+    f0: float,
+    f1: float | None = None,
+    start: float = 0.0,
+    end: float = 1.0,
+    duration: float = 2.0,
+    sr: int = SR,
+    amp: float = 0.3,
+    gaps: tuple[tuple[float, float], ...] = (),
+    bursts: tuple[tuple[float, float, float], ...] = (),
+    noise_floor: float = 0.0,
+    extra_sines: tuple[tuple[float, float, float, float], ...] = (),
+    seed: int = 11,
+) -> np.ndarray:
+    """单声道浮点波形：线性扫频的窄带啸声 + 可选静音缺口/宽带冲击/叠加正弦。
+
+    extra_sines: (起始时刻, 结束时刻, 起始频率, 结束频率)
+    bursts: (时刻, 时长秒, 幅度) 宽带噪声冲击，用来盖住啸声。
+    """
+    rng = np.random.default_rng(seed)
+    n = int(round(duration * sr))
+    t = np.arange(n, dtype=np.float64) / sr
+    x = rng.standard_normal(n) * noise_floor
+    f1 = f0 if f1 is None else f1
+    def add_glide(a: float, b: float, fa: float, fb: float, gain: float) -> None:
+        mask = ((t >= a) & (t <= b)).astype(np.float64)
+        # 5 ms 余弦渐变，避免起止形成宽带咔嗒声
+        ramp = max(1, int(0.005 * sr))
+        kern = np.hanning(2 * ramp + 1)
+        kern /= kern.sum()
+        mask = np.convolve(mask, kern, mode="same")
+        u = np.clip(t - a, 0.0, None)
+        phase = 2 * np.pi * (fa * u + (fb - fa) * u * u / (2 * max(1e-6, b - a)))
+        x[:] += gain * mask * np.sin(phase)
+
+    add_glide(start, end, f0, f1, amp)
+    for a, b, fa, fb in extra_sines:
+        add_glide(a, b, fa, fb, amp)
+    for a, b in gaps:
+        mask = (t >= a) & (t < b)
+        x[mask] = 0.0
+    for time, dur, burst_amp in bursts:
+        s = int(round(time * sr))
+        e = min(n, s + int(round(dur * sr)))
+        if s < n:
+            x[s:e] += burst_amp * rng.standard_normal(e - s)
+    return np.clip(x, -1.0, 1.0)
+
+
+def wav_from_samples(x: np.ndarray, sr: int = SR) -> bytes:
+    """float 波形 -> 16-bit PCM 单声道 WAV。"""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes((x * 32767).astype("<i2").tobytes())
+    return buf.getvalue()
+
+
+def build_whistle_wav(*args, **kwargs) -> bytes:
+    sr = kwargs.pop("sr", SR)
+    return wav_from_samples(whistle_signal(*args, sr=sr, **kwargs), sr=sr)
+
